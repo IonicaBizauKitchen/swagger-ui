@@ -1,19 +1,17 @@
-function SwaggerService(baseUrl, _apiKey, statusCallback) {
-  if (!baseUrl)
-  throw new Error("baseUrl must be passed while creating SwaggerService");
+function SwaggerService(discoveryUrl, _apiKey, statusCallback) {
+  if (!discoveryUrl)
+  throw new Error("discoveryUrl must be passed while creating SwaggerService");
 
   // constants
-  baseUrl = jQuery.trim(baseUrl);
-  if (baseUrl.length == 0)
-  throw new Error("baseUrl must be passed while creating SwaggerService");
+  discoveryUrl = jQuery.trim(discoveryUrl);
+  if (discoveryUrl.length == 0)
+  throw new Error("discoveryUrl must be passed while creating SwaggerService");
 
-  if (! (baseUrl.toLowerCase().indexOf("http:") == 0 || baseUrl.toLowerCase().indexOf("https:") == 0)) {
-    baseUrl = ("http://" + baseUrl);
+  if (! (discoveryUrl.toLowerCase().indexOf("http:") == 0 || discoveryUrl.toLowerCase().indexOf("https:") == 0)) {
+    discoveryUrl = ("http://" + discoveryUrl);
   }
 
-  var apiHost = baseUrl.substr(0, baseUrl.lastIndexOf("/"));
-  var discoParts = baseUrl.split("/");
-  var rootResourcesApiName = discoParts[discoParts.length-1];
+  var apiHost = null;
   var formatString = ".{format}";
   var statusListener = statusCallback;
   var apiKey = _apiKey;
@@ -60,7 +58,6 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
       if (atts) this.load(atts);
       this.path_json = this.path.replace("{format}", "json");
       this.path_xml = this.path.replace("{format}", "xml");
-      this.baseUrl = apiHost;
       //execluded 9 letters to remove .{format} from name
       this.name = this.path.split("/");
       this.name = this.name[this.name.length - 1];
@@ -70,9 +67,14 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
       this.modelList = ApiModel.sub();
     },
 
-    addApis: function(apiObjects) {
-      // log("apiObjects: %o", apiObjects);
+    addApis: function(apiObjects, basePath) {
+      this.baseUrl = basePath;
       this.apiList.createAll(apiObjects);
+      
+      this.apiList.each(function(api) {
+        api.recursivelyUpdateBaseUrl(basePath);
+      });
+
     },
 
     addModel: function(modelObject) {
@@ -90,13 +92,11 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
     init: function(atts) {
       if (atts) this.load(atts);
 
-      this.baseUrl = apiHost;
-
       var secondPathSeperatorIndex = this.path.indexOf("/", 1);
       if (secondPathSeperatorIndex > 0) {
         var prefix = this.path.substr(0, secondPathSeperatorIndex);
         var suffix = this.path.substr(secondPathSeperatorIndex, this.path.length);
-        // log(this.path + ":: " + prefix + "..." + suffix);
+
         this.path_json = prefix.replace("{format}", "json") + suffix;
         this.path_xml = prefix.replace("{format}", "xml") + suffix;;
 
@@ -135,6 +135,14 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
       updateStatus("Loading " + this.path + "...");
 
     },
+    
+    recursivelyUpdateBaseUrl: function(baseUrl) {
+      this.baseUrl = baseUrl;
+      for (var i = 0; i < this.operations.all().length; i++) {
+        var e = this.operations.all()[i]; 
+        e.baseUrl = baseUrl;
+      }
+    },
 
     toString: function() {
       var opsString = "";
@@ -157,7 +165,6 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
     init: function(atts) {
       if (atts) this.load(atts);
 
-      this.baseUrl = apiHost;
       this.httpMethodLowercase = this.httpMethod.toLowerCase();
 
       var value = this.parameters;
@@ -206,7 +213,7 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
       });
 
       url = this.baseUrl + url + queryParams;
-      // log("final url with query params and base url = " + url);
+      log("final url with query params and base url = " + url);
 
       return url;
     }
@@ -366,24 +373,33 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
       var controller = this;
 
       updateStatus("Fetching API List...");
-      var url = apiHost + "/" + rootResourcesApiName + apiKeySuffix;
+      var url = discoveryUrl + apiKeySuffix;
+
       $.getJSON(url, function(response) {
+      })
+      .success(function(response) { 
+        ApiResource.createAll(response.apis);  
+        apiHost = response.basePath;  
+        log ("apiHost: %s", apiHost);        
+        controller.fetchResources();  
+      })
+      .error(function(response) { 
+
+        log ('Error with resource discovery. Trying again with resources.json appended...');
         
-        // if (response.apis) {
+        var url = (discoveryUrl + "/resources.json" + apiKeySuffix).replace('//resources', '/resources');
+        
+        $.getJSON(url, function(response) {
           ApiResource.createAll(response.apis);  
-        // }
-        
-        // get rid of the root resource list api since we're not going to document that
-        var obj = ApiResource.findByAttribute("name", rootResourcesApiName);
-        if (obj)
-          obj.destroy();
-        controller.fetchResources();
-      });      
+          apiHost = response.basePath;  
+          log ("apiHost: %s", apiHost);        
+          controller.fetchResources();
+        });
+      });
+
     },
 
     fetchResources: function() {
-      //log("fetchResources");
-      //ApiResource.logAll();
       for (var i = 0; i < ApiResource.all().length; i++) {
         var apiResource = ApiResource.all()[i];
         this.fetchResource(apiResource);
@@ -404,19 +420,13 @@ function SwaggerService(baseUrl, _apiKey, statusCallback) {
     loadResources: function(response, apiResource) {
       try {
         this.countLoaded++;
-        //    log(response);
-        // if (response.apis) {
-          apiResource.addApis(response.apis);  
-        // }
-        //        updateStatus("Parsed Apis");
-        //log(response.models);
+        // log ("loadResources response.basePath: %o", response.basePath);
+        
+        apiResource.addApis(response.apis, response.basePath);  
         if (response.models) {
-          // log("response.models.length = " + response.models.length);
-          for (var modeName in response.models) {
-            var m = response.models[modeName];
-            // log("creating " + m.id);
+          for (var modelName in response.models) {
+            var m = response.models[modelName];
             apiResource.addModel(m);
-            //      apiResource.modelList.create(m);
           }
         }
 
